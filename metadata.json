@@ -1,0 +1,7 @@
+{
+  "name": "Narrator Voice Studio",
+  "description": "Transform text into lifelike speech using Gemini's advanced TTS models. Supports single-voice narration and multi-speaker dialogue.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
