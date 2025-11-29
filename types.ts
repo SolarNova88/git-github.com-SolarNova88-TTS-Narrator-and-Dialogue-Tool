@@ -27,7 +27,7 @@ export interface ScriptLine {
   text: string;
 }
 
-export type AppMode = 'NARRATION' | 'DIALOGUE' | 'CLONING';
+export type AppMode = 'NARRATION' | 'DIALOGUE' | 'CLONING' | 'TRANSCRIPTION';
 
 export interface GeneratedAudio {
   blob: Blob;

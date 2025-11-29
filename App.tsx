@@ -1,11 +1,12 @@
 
+
 import React, { useState, useCallback, useRef } from 'react';
 import { VoiceName, AppMode, Character, ScriptLine, GeneratedAudio, Snippet, Subsection } from './types';
 import { VoiceSelector } from './components/VoiceSelector';
 import { AudioPlayer } from './components/AudioPlayer';
 import { SectionEditor } from './components/SectionEditor';
 import { TableOfContents } from './components/TableOfContents';
-import { generateSingleVoice, generateDialogue, generateClonedSpeech } from './services/geminiService';
+import { generateSingleVoice, generateDialogue, generateClonedSpeech, transcribeAudio } from './services/geminiService';
 import { decodeAudioData, bufferToWavBlob } from './utils/audioUtils';
 
 // Default initial state
@@ -55,6 +56,10 @@ export default function App() {
   const [cloningText, setCloningText] = useState("Enter text to be spoken by the cloned voice...");
   const [cloningReference, setCloningReference] = useState<{name: string, data: string, mimeType: string} | null>(null);
   
+  // Transcription State
+  const [transcriptionFile, setTranscriptionFile] = useState<{name: string, data: string, mimeType: string} | null>(null);
+  const [transcriptionResult, setTranscriptionResult] = useState<string>("");
+
   // Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -77,11 +82,12 @@ export default function App() {
     if (mode === 'NARRATION') return JSON.stringify({ text: narrationText, voice: narrationVoice });
     if (mode === 'DIALOGUE') return JSON.stringify({ script, characters });
     if (mode === 'CLONING') return JSON.stringify({ text: cloningText, ref: cloningReference?.name });
+    // Transcription doesn't use the audio player in the same way, so hash is less relevant for the main generate button
     return '';
   };
 
   const currentContentHash = getContentHash();
-  const isStale = !!generatedAudio && currentContentHash !== lastGeneratedHash;
+  const isStale = !!generatedAudio && currentContentHash !== lastGeneratedHash && mode !== 'TRANSCRIPTION';
 
   const handleGenerate = async () => {
     setLoading(true);
@@ -104,6 +110,12 @@ export default function App() {
             referenceAudio: cloningReference.data,
             mimeType: cloningReference.mimeType
         });
+      } else if (mode === 'TRANSCRIPTION') {
+        if (!transcriptionFile) throw new Error("Please upload an audio file to transcribe.");
+        const text = await transcribeAudio(transcriptionFile.data, transcriptionFile.mimeType);
+        setTranscriptionResult(text);
+        setLoading(false);
+        return; // Transcription handles its own result state, not the audio player
       }
 
       const ctx = getAudioContext();
@@ -129,22 +141,19 @@ export default function App() {
     }
   };
 
-  // Cloning File Handler
-  const handleReferenceUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Generic File Upload Handler
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: any) => void) => {
     const file = e.target.files?.[0];
     if (file) {
-      // Validate file type
       if (!file.type.startsWith('audio/')) {
         setError("Please upload a valid audio file.");
         return;
       }
-      
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64String = reader.result as string;
-        // remove data prefix (e.g., "data:audio/wav;base64,")
         const base64Data = base64String.split(',')[1];
-        setCloningReference({
+        setter({
             data: base64Data,
             mimeType: file.type,
             name: file.name
@@ -153,6 +162,12 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  const handleCloningUpload = (e: React.ChangeEvent<HTMLInputElement>) => handleFileUpload(e, setCloningReference);
+  const handleTranscriptionUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+      setTranscriptionResult(""); // Clear previous result
+      handleFileUpload(e, setTranscriptionFile);
   };
 
   // Recording Functions
@@ -173,11 +188,18 @@ export default function App() {
         reader.onloadend = () => {
             const base64String = reader.result as string;
             const base64Data = base64String.split(',')[1];
-            setCloningReference({
+            
+            const fileData = {
                 data: base64Data,
                 mimeType: 'audio/webm',
                 name: `recording-${Date.now()}.webm`
-            });
+            };
+            
+            if (mode === 'CLONING') {
+                setCloningReference(fileData);
+            } else if (mode === 'TRANSCRIPTION') {
+                setTranscriptionFile(fileData);
+            }
         };
         reader.readAsDataURL(blob);
         stream.getTracks().forEach(track => track.stop()); // Stop mic
@@ -375,6 +397,14 @@ export default function App() {
               }`}
             >
               Voice Cloning
+            </button>
+            <button
+              onClick={() => { setMode('TRANSCRIPTION'); setGeneratedAudio(null); setError(null); setLastGeneratedHash(''); }}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all ${
+                mode === 'TRANSCRIPTION' ? 'bg-indigo-600 text-white shadow-md' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Transcription
             </button>
           </div>
         </header>
@@ -640,7 +670,7 @@ export default function App() {
                                 <input 
                                     type="file" 
                                     accept="audio/*" 
-                                    onChange={handleReferenceUpload}
+                                    onChange={handleCloningUpload}
                                     className="hidden" 
                                 />
                             </label>
@@ -703,6 +733,123 @@ export default function App() {
                  </div>
                </div>
             )}
+
+            {mode === 'TRANSCRIPTION' && (
+                <div className="space-y-8 animate-fadeIn">
+                    <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-md">
+                        <h2 className="text-lg font-semibold mb-4 text-slate-200">1. Upload Audio</h2>
+                         {isRecording ? (
+                            <div className="bg-slate-950 p-6 rounded-lg border-2 border-indigo-500/50 shadow-2xl relative overflow-hidden animate-fadeIn">
+                                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-red-500 to-transparent animate-pulse"></div>
+                                <div className="flex items-center justify-between mb-6">
+                                    <div className="flex items-center space-x-2 text-red-400 animate-pulse">
+                                        <div className="w-3 h-3 bg-red-500 rounded-full"></div>
+                                        <span className="text-xs font-bold uppercase tracking-widest">Recording...</span>
+                                    </div>
+                                    <div className="font-mono text-xl font-bold text-slate-100">{formatTime(recordingTime)}</div>
+                                </div>
+                                <div className="text-center">
+                                     <button
+                                        onClick={stopRecording}
+                                        className="inline-flex items-center px-8 py-3 bg-red-600 hover:bg-red-500 text-white rounded-full font-bold shadow-lg shadow-red-500/30 transition-all transform hover:scale-105"
+                                    >
+                                        <div className="w-4 h-4 bg-white rounded-sm mr-2"></div>
+                                        Stop Recording
+                                    </button>
+                                </div>
+                            </div>
+                         ) : (
+                             <div className="p-6 border-2 border-dashed border-slate-600 rounded-lg bg-slate-900/50 flex flex-col items-center justify-center text-center">
+                                <div className="mb-4">
+                                    <div className="w-16 h-16 bg-slate-700 rounded-full flex items-center justify-center mx-auto mb-2 text-indigo-400">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-sm text-slate-300 font-medium">Upload audio to transcribe</p>
+                                    <p className="text-xs text-slate-500 mt-1">WAV, MP3, WEBM supported</p>
+                                </div>
+                                
+                                <label className="cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium py-2 px-4 rounded-lg transition-colors shadow-sm">
+                                    Choose File
+                                    <input 
+                                        type="file" 
+                                        accept="audio/*" 
+                                        onChange={handleTranscriptionUpload}
+                                        className="hidden" 
+                                    />
+                                </label>
+
+                                <div className="flex items-center w-full my-4 max-w-sm">
+                                    <div className="h-px bg-slate-700 flex-grow"></div>
+                                    <span className="px-3 text-slate-500 text-xs font-semibold uppercase">OR</span>
+                                    <div className="h-px bg-slate-700 flex-grow"></div>
+                                </div>
+
+                                <button
+                                    onClick={startRecording}
+                                    className="w-full max-w-sm py-2 px-4 rounded-lg font-medium transition-all flex items-center justify-center space-x-2 bg-slate-700 hover:bg-slate-600 text-slate-200 border border-slate-600 shadow-sm"
+                                >
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M7 4a3 3 0 016 0v4a3 3 0 11-6 0V4zm4 10.93A7.001 7.001 0 0017 8a1 1 0 10-2 0A5 5 0 015 8a1 1 0 00-2 0 7.001 7.001 0 006 6.93V17H6a1 1 0 100 2h8a1 1 0 100-2h-3v-2.07z" clipRule="evenodd" />
+                                    </svg>
+                                    <span>Record from Microphone</span>
+                                </button>
+                                
+                                {transcriptionFile && (
+                                    <div className="mt-6 w-full max-w-md bg-slate-800 p-3 rounded-lg flex items-center justify-between border border-slate-600 shadow-sm animate-fadeIn">
+                                        <div className="flex items-center space-x-3 overflow-hidden">
+                                            <div className="flex-shrink-0 w-8 h-8 bg-blue-500/20 text-blue-400 rounded flex items-center justify-center">
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                                                </svg>
+                                            </div>
+                                            <div className="flex flex-col text-left">
+                                                <span className="text-xs text-slate-400 uppercase font-bold">Audio Ready</span>
+                                                <span className="text-sm text-slate-200 truncate">{transcriptionFile.name}</span>
+                                            </div>
+                                        </div>
+                                        <button 
+                                            onClick={() => setTranscriptionFile(null)}
+                                            className="text-slate-500 hover:text-red-400 p-2"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                        </button>
+                                    </div>
+                                )}
+                                {transcriptionFile && (
+                                    <audio controls src={`data:${transcriptionFile.mimeType};base64,${transcriptionFile.data}`} className="mt-4 w-full max-w-md h-8" />
+                                )}
+                             </div>
+                         )}
+                    </div>
+
+                    <div className="bg-slate-800 rounded-xl p-6 border border-slate-700 shadow-md">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-lg font-semibold text-slate-200">2. Transcription Result</h2>
+                            <button
+                                onClick={() => navigator.clipboard.writeText(transcriptionResult)}
+                                disabled={!transcriptionResult}
+                                className="text-xs bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 text-white px-3 py-1.5 rounded-full transition-colors font-medium flex items-center shadow-sm"
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
+                                    <path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" />
+                                </svg>
+                                Copy Text
+                            </button>
+                        </div>
+                        <textarea
+                            value={transcriptionResult}
+                            readOnly
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg p-4 text-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all resize-y min-h-[300px] leading-relaxed font-mono text-sm shadow-inner"
+                            placeholder="Transcription will appear here..."
+                        />
+                    </div>
+                </div>
+            )}
           </div>
 
           {/* Right Column: Actions & Preview */}
@@ -710,34 +857,47 @@ export default function App() {
             <div className="sticky top-6">
               <button
                 onClick={handleGenerate}
-                disabled={loading || (mode === 'CLONING' && !cloningReference)}
+                disabled={loading || (mode === 'CLONING' && !cloningReference) || (mode === 'TRANSCRIPTION' && !transcriptionFile)}
                 className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold py-4 px-6 rounded-xl shadow-lg shadow-indigo-500/20 transform transition-all hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 flex items-center justify-center space-x-2"
               >
                 {loading ? (
                    <>
                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                     <span>Generating...</span>
+                     <span>{mode === 'TRANSCRIPTION' ? 'Transcribing...' : 'Generating...'}</span>
                    </>
                 ) : (
                    <>
-                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                       <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.414z" clipRule="evenodd" />
-                     </svg>
-                     <span>{isStale ? "Update & Generate" : "Generate Audio"}</span>
+                     {mode === 'TRANSCRIPTION' ? (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                     ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.414z" clipRule="evenodd" />
+                        </svg>
+                     )}
+                     <span>
+                        {mode === 'TRANSCRIPTION' 
+                            ? "Transcribe Audio" 
+                            : (isStale ? "Update & Generate" : "Generate Audio")
+                        }
+                     </span>
                    </>
                 )}
               </button>
 
-              <div className="mt-8">
-                 <h3 className="text-sm font-semibold text-slate-400 mb-2">Master Output</h3>
-                 <AudioPlayer 
-                    audio={generatedAudio} 
-                    isGenerating={loading} 
-                    isStale={isStale}
-                    onGenerate={handleGenerate}
-                    fileName={formatFileName([appName, featureName, mode === 'CLONING' ? 'Clone' : 'Master'])}
-                 />
-              </div>
+              {mode !== 'TRANSCRIPTION' && (
+                  <div className="mt-8 animate-fadeIn">
+                     <h3 className="text-sm font-semibold text-slate-400 mb-2">Master Output</h3>
+                     <AudioPlayer 
+                        audio={generatedAudio} 
+                        isGenerating={loading} 
+                        isStale={isStale}
+                        onGenerate={handleGenerate}
+                        fileName={formatFileName([appName, featureName, mode === 'CLONING' ? 'Clone' : 'Master'])}
+                     />
+                  </div>
+              )}
 
               {/* Table of Contents */}
               {mode === 'NARRATION' && (
@@ -760,6 +920,12 @@ export default function App() {
                         <li>The model analyzes the <strong>timbre, pitch, and prosody</strong> of your recording.</li>
                         <li>Read the script clearly for best results.</li>
                         <li><strong>Note:</strong> Voice cloning works best when the target text is in the same language as the reference.</li>
+                     </>
+                  ) : mode === 'TRANSCRIPTION' ? (
+                     <>
+                        <li>Supports common audio formats like <strong>WAV, MP3, WEBM</strong>.</li>
+                        <li>Clear audio with minimal background noise yields the best accuracy.</li>
+                        <li>You can also record directly from your microphone.</li>
                      </>
                   ) : (
                      <>

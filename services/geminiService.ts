@@ -1,4 +1,5 @@
 
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import { VoiceName, Character, ScriptLine } from "../types";
 
@@ -158,5 +159,32 @@ export async function generateClonedSpeech(params: CloningParams): Promise<strin
         // Throw the fallback error so we know why the backup failed
         throw new Error(`Voice Generation failed. Native error: ${error.message}. Fallback error: ${fallbackError.message}`);
     }
+  }
+}
+
+export async function transcribeAudio(base64Audio: string, mimeType: string): Promise<string> {
+  const ai = getGenAI();
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: [
+        {
+          parts: [
+            { inlineData: { mimeType, data: base64Audio } },
+            { text: "Transcribe the speech in this audio file into text. Return only the transcription, no other text." }
+          ]
+        }
+      ]
+    });
+
+    if (!response.text) {
+        throw new Error("No transcription generated.");
+    }
+
+    return response.text;
+  } catch (error: any) {
+    console.error("Gemini Transcription Error:", error);
+    throw error;
   }
 }
